@@ -1,0 +1,16 @@
+# Go
+/bin/
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# SQLite
+*.db
+db/
+
+# IDE
+.vscode/
+.idea/

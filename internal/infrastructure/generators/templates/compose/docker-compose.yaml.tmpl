@@ -1,0 +1,11 @@
+version: "3.8"
+services:
+  {{ .AppName }}:
+    image: {{ .Image }}:{{ .Tag }}
+    ports:
+      - "{{ .Port }}:{{ .Port }}"
+    environment:
+{{- range .Env }}
+{{ . }}
+{{- end }}
+    restart: unless-stopped

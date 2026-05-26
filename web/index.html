@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ConfigGen</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-9ndCyUaI9Ai9QUjggB4hNnAf1D1BwHbP9vFyW3n4dXZ9OKK8h6F8RzTvd1T8h0Bh0" crossorigin="anonymous">
+  <style>
+    .result-area { margin-top: 1rem; }
+    .env-row { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; }
+    .env-row input { flex: 1; }
+  </style>
+</head>
+<body class="bg-light">
+  <div class="container py-5">
+    <div class="row justify-content-center">
+      <div class="col-md-8">
+        <div class="card shadow">
+          <div class="card-header bg-primary text-white">
+            <h1 class="h4 mb-0">ConfigGen - 云原生配置生成器</h1>
+          </div>
+          <div class="card-body">
+            <p class="text-muted">选择生成类型，填写参数，生成配置文件。</p>
+
+            <form id="configForm">
+              <div class="mb-3">
+                <label class="form-label">生成类型</label>
+                <select name="type" id="typeSelect" class="form-select" required>
+                  <option value="">请选择生成类型</option>
+                  <option value="dockerfile">Dockerfile</option>
+                  <option value="compose">Docker Compose</option>
+                  <option value="k8s">Kubernetes Manifest</option>
+                </select>
+              </div>
+
+              <!-- 公共字段 - 所有类型都需要 -->
+              <div id="commonFields">
+                <div class="row">
+                  <div class="col-md-6 mb-3">
+                    <label class="form-label">应用名称</label>
+                    <input name="app_name" type="text" class="form-control" value="myapp" required>
+                  </div>
+                  <div class="col-md-6 mb-3">
+                    <label class="form-label">镜像</label>
+                    <input name="image" type="text" class="form-control" value="nginx" required>
+                  </div>
+                </div>
+                <div class="row">
+                  <div class="col-md-6 mb-3">
+                    <label class="form-label">标签</label>
+                    <input name="tag" type="text" class="form-control" value="latest" required>
+                  </div>
+                  <div class="col-md-6 mb-3">
+                    <label class="form-label">端口</label>
+                    <input name="port" type="number" class="form-control" value="80" min="1" max="65535" required>
+                  </div>
+                </div>
+
+                <!-- 环境变量输入 -->
+                <div class="mb-3">
+                  <label class="form-label">环境变量</label>
+                  <div id="envContainer"></div>
+                  <button type="button" id="addEnvBtn" class="btn btn-outline-secondary btn-sm">+ 添加环境变量</button>
+                  <div class="form-text">可选，格式为 KEY=VALUE</div>
+                </div>
+              </div>
+
+              <!-- Docker Compose 参数 -->
+              <div id="composeFields" style="display: none;"></div>
+
+              <!-- Kubernetes 参数 -->
+              <div id="k8sFields" style="display: none;"></div>
+
+              <!-- Dockerfile 参数 -->
+              <div id="dockerfileFields" style="display: none;"></div>
+
+              <button type="submit" class="btn btn-primary" id="generateBtn">
+                <span class="spinner-border spinner-border-sm d-none" role="status" aria-hidden="true"></span>
+                生成配置
+              </button>
+            </form>
+
+            <div class="result-area">
+              <h5>生成结果</h5>
+              <div id="message" class="mb-2"></div>
+              <div class="d-flex gap-2 mb-2">
+                <button id="copyBtn" class="btn btn-outline-secondary btn-sm" disabled>复制</button>
+                <button id="downloadBtn" class="btn btn-outline-success btn-sm" disabled>下载</button>
+              </div>
+              <textarea id="output" class="form-control" readonly rows="15"></textarea>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const form = document.getElementById('configForm');
+    const typeSelect = document.getElementById('typeSelect');
+    const output = document.getElementById('output');
+    const copyBtn = document.getElementById('copyBtn');
+    const downloadBtn = document.getElementById('downloadBtn');
+    const generateBtn = document.getElementById('generateBtn');
+    const messageDiv = document.getElementById('message');
+    const envContainer = document.getElementById('envContainer');
+    const addEnvBtn = document.getElementById('addEnvBtn');
+
+    function resetResultState() {
+      messageDiv.textContent = '';
+      output.value = '';
+      copyBtn.disabled = true;
+      downloadBtn.disabled = true;
+    }
+
+    function showMessage(text, isSuccess) {
+      messageDiv.textContent = '';
+      const div = document.createElement('div');
+      div.className = isSuccess ? 'alert alert-success' : 'alert alert-danger';
+      div.textContent = text;
+      messageDiv.appendChild(div);
+    }
+
+    function addEnvRow(key = '', value = '') {
+      const row = document.createElement('div');
+      row.className = 'env-row';
+      row.innerHTML = `
+        <input type="text" class="form-control env-key" placeholder="KEY" value="${key}">
+        <input type="text" class="form-control env-value" placeholder="VALUE" value="${value}">
+        <button type="button" class="btn btn-outline-danger btn-sm remove-env-btn">删除</button>
+      `;
+      row.querySelector('.remove-env-btn').addEventListener('click', () => row.remove());
+      envContainer.appendChild(row);
+    }
+
+    addEnvBtn.addEventListener('click', () => addEnvRow());
+
+    function collectEnvVars() {
+      const env = {};
+      envContainer.querySelectorAll('.env-row').forEach(row => {
+        const key = row.querySelector('.env-key').value.trim();
+        const value = row.querySelector('.env-value').value.trim();
+        if (key) {
+          env[key] = value;
+        }
+      });
+      return env;
+    }
+
+    resetResultState();
+
+    async function loadFieldFragments() {
+      try {
+        const [composeResponse, k8sResponse, dockerfileResponse] = await Promise.all([
+          fetch('/web/views/compose.html'),
+          fetch('/web/views/kubernetes.html'),
+          fetch('/web/views/dockerfile.html')
+        ]);
+
+        if (composeResponse.ok) {
+          document.getElementById('composeFields').innerHTML = await composeResponse.text();
+        }
+        if (k8sResponse.ok) {
+          document.getElementById('k8sFields').innerHTML = await k8sResponse.text();
+        }
+        if (dockerfileResponse.ok) {
+          document.getElementById('dockerfileFields').innerHTML = await dockerfileResponse.text();
+        }
+      } catch (error) {
+        console.error('Failed to load field fragments:', error);
+      }
+    }
+
+    document.addEventListener('DOMContentLoaded', loadFieldFragments);
+
+    typeSelect.addEventListener('change', function() {
+      const selectedType = this.value;
+      document.getElementById('composeFields').style.display = selectedType === 'compose' ? 'block' : 'none';
+      document.getElementById('k8sFields').style.display = selectedType === 'k8s' ? 'block' : 'none';
+      document.getElementById('dockerfileFields').style.display = selectedType === 'dockerfile' ? 'block' : 'none';
+      resetResultState();
+    });
+
+    form.addEventListener('submit', async function(e) {
+      e.preventDefault();
+      resetResultState();
+
+      const k8sCheckboxes = document.querySelectorAll('input[name="k8s_resource[]"]:checked');
+      const k8sSelectedOptions = Array.from(k8sCheckboxes).map(cb => cb.value);
+
+      if (typeSelect.value === 'k8s' && k8sSelectedOptions.length === 0) {
+        showMessage('请选择至少一种Kubernetes资源类型', false);
+        return;
+      }
+
+      generateBtn.disabled = true;
+      generateBtn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 生成中...';
+
+      try {
+        const formData = new FormData(form);
+        const payload = {
+          type: formData.get('type'),
+          app_name: formData.get('app_name'),
+          image: formData.get('image'),
+          tag: formData.get('tag'),
+          port: Number(formData.get('port')),
+          env: collectEnvVars(),
+        };
+
+        if (formData.get('type') === 'k8s') {
+          payload.k8s_resource = k8sSelectedOptions;
+          const hasWorkload = k8sSelectedOptions.some(opt => ['Deployment', 'StatefulSet', 'DaemonSet', 'CronJob'].includes(opt));
+          if (hasWorkload) {
+            payload.replicas = Number(formData.get('replicas')) || 1;
+          }
+        }
+
+        if (formData.get('type') === 'dockerfile') {
+          const baseImage = formData.get('dockerfile_base_image');
+          if (baseImage) payload.dockerfile_base_image = baseImage;
+          const workDir = formData.get('dockerfile_workdir');
+          if (workDir) payload.dockerfile_workdir = workDir;
+          const cmdStr = formData.get('dockerfile_cmd');
+          if (cmdStr) payload.dockerfile_cmd = cmdStr.split(' ').filter(cmd => cmd.trim() !== '');
+        }
+
+        const response = await fetch(`/api/v1/generate/${payload.type}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+
+        const result = await response.json();
+
+        if (response.ok) {
+          output.value = result.result?.config || '';
+          copyBtn.disabled = false;
+          downloadBtn.disabled = false;
+          showMessage('配置生成成功！', true);
+        } else {
+          const errMessage = result?.error || 'Unknown error';
+          showMessage('错误: ' + errMessage, false);
+          output.value = '';
+          copyBtn.disabled = true;
+          downloadBtn.disabled = true;
+        }
+      } catch (error) {
+        showMessage('网络错误，请重试', false);
+        output.value = '';
+        copyBtn.disabled = true;
+        downloadBtn.disabled = true;
+      } finally {
+        generateBtn.disabled = false;
+        generateBtn.innerHTML = '生成配置';
+      }
+    });
+
+    copyBtn.addEventListener('click', function() {
+      navigator.clipboard.writeText(output.value).then(() => {
+        const originalText = copyBtn.textContent;
+        copyBtn.textContent = '已复制！';
+        setTimeout(() => copyBtn.textContent = originalText, 2000);
+      });
+    });
+
+    downloadBtn.addEventListener('click', function() {
+      const mimeType = typeSelect.value === 'dockerfile' ? 'text/plain' : 'application/x-yaml';
+      const blob = new Blob([output.value], { type: mimeType });
+      let filename = typeSelect.value === 'dockerfile' ? 'Dockerfile' : `config-${typeSelect.value}.yaml`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    });
+  </script>
+</body>
+</html>

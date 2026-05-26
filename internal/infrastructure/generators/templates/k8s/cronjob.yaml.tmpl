@@ -1,0 +1,17 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ .AppName }}-cronjob
+spec:
+  schedule: "*/5 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: {{ .AppName }}
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: {{ .AppName }}
+            image: {{ .Image }}:{{ .Tag }}
